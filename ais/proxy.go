@@ -806,8 +806,8 @@ func (p *proxyrunner) httpbckpost(w http.ResponseWriter, r *http.Request) {
 		p.listRangeHandler(w, r, &msg, http.MethodPost, bckProvider)
 	case cmn.ActListObjects:
 		p.listBucketAndCollectStats(w, r, bucket, bckProvider, msg, started, false /* fast listing */)
-	case cmn.ActEraseCopies:
-		p.eraseCopies(w, r, bucket, &msg, config)
+	case cmn.ActMakeNCopies:
+		p.makeNCopies(w, r, bucket, &msg, config)
 	default:
 		s := fmt.Sprintf("Unexpected cmn.ActionMsg <- JSON [%v]", msg)
 		p.invalmsghdlr(w, r, s)
@@ -1251,7 +1251,7 @@ func (p *proxyrunner) renameLB(bucketFrom, bucketTo string, clone *bucketMD, pro
 	return true
 }
 
-func (p *proxyrunner) eraseCopies(w http.ResponseWriter, r *http.Request, bucket string, actionMsg *cmn.ActionMsg, config *cmn.Config) {
+func (p *proxyrunner) makeNCopies(w http.ResponseWriter, r *http.Request, bucket string, actionMsg *cmn.ActionMsg, cfg *cmn.Config) {
 	smap := p.smapowner.get()
 	msgInt := p.newActionMsgInternal(actionMsg, smap, nil)
 	jsbytes, err := jsoniter.Marshal(msgInt)
@@ -1262,13 +1262,13 @@ func (p *proxyrunner) eraseCopies(w http.ResponseWriter, r *http.Request, bucket
 		http.MethodPost,
 		jsbytes,
 		smap,
-		config.Timeout.CplaneOperation,
+		cfg.Timeout.CplaneOperation,
 		cmn.NetworkIntraControl,
 		cluster.Targets,
 	)
 	for res := range results {
 		if res.err != nil {
-			s := fmt.Sprintf("Failed to remove object copies, %s, bucket %s, err: %v(%d)",
+			s := fmt.Sprintf("Failed to make-num-copies: %s, bucket %s, err: %v(%d)",
 				res.si.Name(), bucket, res.err, res.status)
 			if res.errstr != "" {
 				glog.Errorln(res.errstr)

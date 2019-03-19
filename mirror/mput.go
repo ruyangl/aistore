@@ -78,8 +78,12 @@ func (r *XactCopy) Run() error {
 	for {
 		select {
 		case lom := <-r.workCh:
+			if errstr := lom.Fill("", cluster.LomCopy); errstr != "" {
+				glog.Errorln(errstr)
+				break
+			}
 			// load balance
-			if copier := r.loadBalance(lom); copier != nil {
+			if copier := r.loadBalancePUT(lom); copier != nil {
 				if glog.V(4) {
 					glog.Infof("%s=>%s", lom.ParsedFQN.MpathInfo, copier.mpathInfo)
 				}
@@ -113,7 +117,7 @@ func (r *XactCopy) Copy(lom *cluster.LOM) (err error) {
 	if r.Mirror.OptimizePUT {
 		if pending > 1 && pending >= max {
 			r.dropped++
-			if (r.dropped % logNumDropped) == 0 {
+			if (r.dropped % logNumProcessed) == 0 {
 				glog.Errorf("%s: pending=%d, total=%d, dropped=%d", r, pending, r.total, r.dropped)
 			}
 			return
@@ -156,11 +160,23 @@ func (r *XactCopy) Stop(error) { r.Abort() } // call base method
 // serve GETs are even less available for other extended actions than otherwise, etc.
 // =================== load balancing and self-throttling ========================
 
-func (r *XactCopy) loadBalance(lom *cluster.LOM) (copier *copier) {
+func (r *XactCopy) loadBalancePUT(lom *cluster.LOM) (copier *copier) {
 	var util = cmn.PairF32{101, 101}
 	for _, j := range r.copiers {
 		if j.mpathInfo.Path == lom.ParsedFQN.MpathInfo.Path {
 			continue
+		}
+		if lom.HasCopies() {
+			for _, cpyfqn := range lom.CopyFQN {
+				parsedFQN, err := fs.Mountpaths.FQN2Info(cpyfqn) // can be optimized via lom.init
+				if err != nil {
+					glog.Errorf("%s: failed to parse copyFQN %s, err: %v", lom, cpyfqn, err)
+					continue
+				}
+				if j.mpathInfo.Path == parsedFQN.MpathInfo.Path {
+					continue
+				}
+			}
 		}
 		if _, curr := j.mpathInfo.GetIOstats(fs.StatDiskUtil); curr.Max < util.Max {
 			copier = j
@@ -241,7 +257,7 @@ func (j *copier) mirror(lom *cluster.LOM) {
 		if glog.V(4) {
 			glog.Infof("copied %s/%s %s=>%s", lom.Bucket, lom.Objname, lom.ParsedFQN.MpathInfo, j.mpathInfo)
 		}
-		if v := atomic.AddInt64(&j.parent.copied, 1); (v % logNumCopied) == 0 {
+		if v := atomic.AddInt64(&j.parent.copied, 1); (v % logNumProcessed) == 0 {
 			glog.Infof("%s: total~=%d, copied=%d", j.parent.String(), j.parent.total, v)
 		}
 	}

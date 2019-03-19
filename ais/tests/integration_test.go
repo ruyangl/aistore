@@ -1629,7 +1629,7 @@ func testLocalMirror(t *testing.T, erase bool) {
 
 	if erase {
 		tutils.Logln("Erase in parallel...")
-		if err := api.EraseCopies(baseParams, m.bucket); err != nil {
+		if err := api.MakeNCopies(baseParams, m.bucket, 0); err != nil {
 			t.Fatalf("Failed to start erase-copies xaction, err: %v", err)
 		}
 		timedout := 60 // seconds
@@ -1638,7 +1638,7 @@ func testLocalMirror(t *testing.T, erase bool) {
 			var allDetails = make(map[string][]stats.XactionDetails) // TODO: missing API
 			time.Sleep(time.Second)
 
-			responseBytes, err := tutils.GetXactionResponse(m.proxyURL, cmn.ActEraseCopies)
+			responseBytes, err := tutils.GetXactionResponse(m.proxyURL, cmn.ActMakeNCopies)
 			tutils.CheckFatal(err, t)
 			err = json.Unmarshal(responseBytes, &allDetails)
 			tutils.CheckFatal(err, t)
@@ -1655,7 +1655,7 @@ func testLocalMirror(t *testing.T, erase bool) {
 			}
 		}
 		if !ok {
-			t.Errorf("timed-out waiting for %s to finish", cmn.ActEraseCopies)
+			t.Errorf("timed-out waiting for %s to finish", cmn.ActMakeNCopies)
 		}
 	}
 

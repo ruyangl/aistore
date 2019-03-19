@@ -20,29 +20,28 @@ import (
 )
 
 const (
-	throttleNumErased = 16                     // unit of self-throttling
-	logNumErased      = throttleNumErased * 16 // unit of house-keeping
-	logNumCopied      = logNumErased
-	logNumDropped     = logNumErased
+	throttleNumObjects = 16                      // unit of self-throttling
+	logNumProcessed    = throttleNumObjects * 16 // unit of house-keeping
 )
 
-// XactErase (extended action) reduces data redundancy of a given bucket to 1 (single copy)
+// XactBckMakeNCopies (extended action) reduces data redundancy of a given bucket to 1 (single copy)
 // It runs in a background and traverses all local mountpaths to do the job.
 
 type (
-	XactErase struct {
+	XactBckMakeNCopies struct {
 		// implements cmn.Xact a cmn.Runner interfaces
 		cmn.XactBase
 		// runtime
 		doneCh  chan struct{}
-		erasers map[string]*eraser
+		joggers map[string]*jogger
 		// init
 		T          cluster.Target
 		Namelocker cluster.NameLocker
+		Copies     int
 		BckIsLocal bool
 	}
-	eraser struct { // one per mountpath
-		parent    *XactErase
+	jogger struct { // one per mountpath
+		parent    *XactBckMakeNCopies
 		mpathInfo *fs.MountpathInfo
 		config    *cmn.Config
 		num       int64
@@ -54,7 +53,8 @@ type (
 // public methods
 //
 
-func (r *XactErase) Run() (err error) {
+func (r *XactBckMakeNCopies) Run() (err error) {
+	cmn.Assert(r.Copies == 0) // FIXME: TODO: not implemented yet
 	var numjs int
 	if numjs, err = r.init(); err != nil {
 		return err
@@ -69,8 +69,8 @@ func (r *XactErase) Run() (err error) {
 		case <-r.doneCh:
 			numjs--
 			if numjs == 0 {
-				glog.Infof("%s: all erasers completed", r)
-				r.erasers = nil
+				glog.Infof("%s: all joggers completed", r)
+				r.joggers = nil
 				r.stop()
 				return
 			}
@@ -78,48 +78,48 @@ func (r *XactErase) Run() (err error) {
 	}
 }
 
-func (r *XactErase) Stop(error) { r.Abort() } // call base method
+func (r *XactBckMakeNCopies) Stop(error) { r.Abort() } // call base method
 
 //
 // private methods
 //
 
-func (r *XactErase) init() (numjs int, err error) {
+func (r *XactBckMakeNCopies) init() (numjs int, err error) {
 	availablePaths, _ := fs.Mountpaths.Get()
 	numjs = len(availablePaths)
 	if err = checkErrNumMp(r, numjs); err != nil {
 		return
 	}
 	r.doneCh = make(chan struct{}, numjs)
-	r.erasers = make(map[string]*eraser, numjs)
+	r.joggers = make(map[string]*jogger, numjs)
 	config := cmn.GCO.Get()
 	for _, mpathInfo := range availablePaths {
-		eraser := &eraser{parent: r, mpathInfo: mpathInfo, config: config}
+		jogger := &jogger{parent: r, mpathInfo: mpathInfo, config: config}
 		mpathLC := mpathInfo.MakePath(fs.ObjectType, r.BckIsLocal)
-		r.erasers[mpathLC] = eraser
-		go eraser.jog()
+		r.joggers[mpathLC] = jogger
+		go jogger.jog()
 	}
 	return
 }
 
-func (r *XactErase) stop() {
+func (r *XactBckMakeNCopies) stop() {
 	if r.Finished() {
 		glog.Warningf("%s is (already) not running", r)
 		return
 	}
-	for _, eraser := range r.erasers {
-		eraser.stop()
+	for _, jogger := range r.joggers {
+		jogger.stop()
 	}
 	r.EndTime(time.Now())
 }
 
 //
-// mpath eraser
+// mpath jogger
 //
-func (j *eraser) stop() { j.stopCh <- struct{}{}; close(j.stopCh) }
+func (j *jogger) stop() { j.stopCh <- struct{}{}; close(j.stopCh) }
 
-func (j *eraser) jog() {
-	glog.Infof("eraser[%s/%s] started", j.mpathInfo, j.parent.Bucket())
+func (j *jogger) jog() {
+	glog.Infof("jogger[%s/%s] started", j.mpathInfo, j.parent.Bucket())
 	j.stopCh = make(chan struct{}, 1)
 	dir := j.mpathInfo.MakePathBucket(fs.ObjectType, j.parent.Bucket(), j.parent.BckIsLocal)
 	if err := filepath.Walk(dir, j.walk); err != nil {
@@ -133,7 +133,7 @@ func (j *eraser) jog() {
 	j.parent.doneCh <- struct{}{}
 }
 
-func (j *eraser) walk(fqn string, osfi os.FileInfo, err error) error {
+func (j *jogger) walk(fqn string, osfi os.FileInfo, err error) error {
 	if err != nil {
 		if errstr := cmn.PathWalkErr(err); errstr != "" {
 			glog.Errorf(errstr)
@@ -151,23 +151,23 @@ func (j *eraser) walk(fqn string, osfi os.FileInfo, err error) error {
 		}
 		return nil
 	}
-	if !lom.HasCopy() {
+	if !lom.HasCopies() {
 		return nil
 	}
 
 	j.parent.Namelocker.Lock(lom.Uname, true)
 	defer j.parent.Namelocker.Unlock(lom.Uname, true)
 
-	if errstr := lom.DelCopy(); errstr != "" {
+	if errstr := lom.DelAllCopies(); errstr != "" {
 		return errors.New(errstr)
 	}
 	j.num++
-	if (j.num % throttleNumErased) == 0 {
+	if (j.num % throttleNumObjects) == 0 {
 		if err = j.yieldTerm(); err != nil {
 			return err
 		}
-		if (j.num % logNumErased) == 0 {
-			glog.Infof("eraser[%s/%s] erased %d copies...", j.mpathInfo, j.parent.Bucket(), j.num)
+		if (j.num % logNumProcessed) == 0 {
+			glog.Infof("jogger[%s/%s] erased %d copies...", j.mpathInfo, j.parent.Bucket(), j.num)
 			j.config = cmn.GCO.Get()
 		}
 	} else {
@@ -177,11 +177,11 @@ func (j *eraser) walk(fqn string, osfi os.FileInfo, err error) error {
 }
 
 // [throttle]
-func (j *eraser) yieldTerm() error {
+func (j *jogger) yieldTerm() error {
 	xaction := &j.config.Xaction
 	select {
 	case <-j.stopCh:
-		return fmt.Errorf("eraser[%s/%s] aborted, exiting", j.mpathInfo, j.parent.Bucket())
+		return fmt.Errorf("jogger[%s/%s] aborted, exiting", j.mpathInfo, j.parent.Bucket())
 	default:
 		_, curr := j.mpathInfo.GetIOstats(fs.StatDiskUtil)
 		if curr.Max >= float32(xaction.DiskUtilHighWM) && curr.Min > float32(xaction.DiskUtilLowWM) {
