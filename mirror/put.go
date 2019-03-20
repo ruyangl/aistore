@@ -83,7 +83,6 @@ func (r *XactCopy) Run() error {
 				break
 			}
 			cmn.Assert(r.BckIsLocal == lom.BckIsLocal)
-			// load balance
 			if copier := r.loadBalancePUT(lom); copier != nil {
 				if glog.V(4) {
 					glog.Infof("%s=>%s", lom.ParsedFQN.MpathInfo, copier.mpathInfo)
@@ -180,9 +179,9 @@ loop:
 				}
 			}
 		}
-		if _, curr := j.mpathInfo.GetIOstats(fs.StatDiskUtil); curr.Max < util.Max {
+		if _, u := j.mpathInfo.GetIOstats(fs.StatDiskUtil); u.Max < util.Max && u.Min <= util.Min {
 			copier = j
-			util = curr
+			util = u
 		}
 	}
 	return
