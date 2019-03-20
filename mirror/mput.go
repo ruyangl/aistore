@@ -82,6 +82,7 @@ func (r *XactCopy) Run() error {
 				glog.Errorln(errstr)
 				break
 			}
+			cmn.Assert(r.BckIsLocal == lom.BckIsLocal)
 			// load balance
 			if copier := r.loadBalancePUT(lom); copier != nil {
 				if glog.V(4) {
@@ -162,6 +163,7 @@ func (r *XactCopy) Stop(error) { r.Abort() } // call base method
 
 func (r *XactCopy) loadBalancePUT(lom *cluster.LOM) (copier *copier) {
 	var util = cmn.PairF32{101, 101}
+loop:
 	for _, j := range r.copiers {
 		if j.mpathInfo.Path == lom.ParsedFQN.MpathInfo.Path {
 			continue
@@ -171,10 +173,10 @@ func (r *XactCopy) loadBalancePUT(lom *cluster.LOM) (copier *copier) {
 				parsedFQN, err := fs.Mountpaths.FQN2Info(cpyfqn) // can be optimized via lom.init
 				if err != nil {
 					glog.Errorf("%s: failed to parse copyFQN %s, err: %v", lom, cpyfqn, err)
-					continue
+					continue loop
 				}
 				if j.mpathInfo.Path == parsedFQN.MpathInfo.Path {
-					continue
+					continue loop
 				}
 			}
 		}
@@ -224,7 +226,7 @@ loop:
 	for {
 		select {
 		case lom := <-j.workCh:
-			j.mirror(lom)
+			j.addCopy(lom)
 			j.parent.DecPending() // to support action renewal on-demand
 		case <-j.stopCh:
 			break loop
@@ -233,7 +235,7 @@ loop:
 	j.parent.Slab.Free(j.buf)
 }
 
-func (j *copier) mirror(lom *cluster.LOM) {
+func (j *copier) addCopy(lom *cluster.LOM) {
 	// copy
 	j.parent.Namelocker.Lock(lom.Uname, false)
 	defer j.parent.Namelocker.Unlock(lom.Uname, false)

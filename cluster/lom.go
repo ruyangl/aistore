@@ -388,12 +388,12 @@ func (lom *LOM) IncObjectVersion() (newVersion string, errstr string) {
 	return
 }
 
-// best-effort load balancing (GET)
-func (lom *LOM) ChooseMirror() (fqn string) {
-	fqn = lom.FQN
+// best-effort GET load balancing (see also `mirror` for loadBalancePUT)
+func (lom *LOM) LoadBalanceGET() (fqn string) {
 	if len(lom.CopyFQN) == 0 {
 		return
 	}
+	fqn = lom.FQN
 	var mp *fs.MountpathInfo
 	_, u := lom.ParsedFQN.MpathInfo.GetIOstats(fs.StatDiskUtil)
 	umin := u

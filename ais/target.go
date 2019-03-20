@@ -894,7 +894,7 @@ func (t *targetrunner) objGetComplete(w http.ResponseWriter, r *http.Request, lo
 		glog.Warningf("%s size=0(zero)", lom) // TODO: optimize out much of the below
 		return
 	}
-	fqn := lom.ChooseMirror()
+	fqn := lom.LoadBalanceGET()
 	file, err = os.Open(fqn)
 	if err != nil {
 		if os.IsPermission(err) {
@@ -1251,6 +1251,10 @@ func (t *targetrunner) httpbckpost(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			t.invalmsghdlr(w, r, fmt.Sprintf("Failed to parse action '%s' value: (%v, %T) unexpected type",
 				cmn.ActMakeNCopies, msgInt.Value, msgInt.Value))
+			return
+		}
+		if err = mirror.ValidateNCopies(copies); err != nil {
+			t.invalmsghdlr(w, r, err.Error())
 			return
 		}
 		t.xactions.abortPutCopies(bucket)

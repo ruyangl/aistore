@@ -22,6 +22,8 @@ import (
 const (
 	throttleNumObjects = 16                      // unit of self-throttling
 	logNumProcessed    = throttleNumObjects * 16 // unit of house-keeping
+	//
+	MaxNCopies = 8
 )
 
 // XactBckMakeNCopies (extended action) reduces data redundancy of a given bucket to 1 (single copy)
@@ -54,7 +56,6 @@ type (
 //
 
 func (r *XactBckMakeNCopies) Run() (err error) {
-	cmn.Assert(r.Copies == 0) // FIXME: TODO: not implemented yet
 	var numjs int
 	if numjs, err = r.init(); err != nil {
 		return err
@@ -69,7 +70,7 @@ func (r *XactBckMakeNCopies) Run() (err error) {
 		case <-r.doneCh:
 			numjs--
 			if numjs == 0 {
-				glog.Infof("%s: all joggers completed", r)
+				glog.Infof("%s: all done", r)
 				r.joggers = nil
 				r.stop()
 				return
@@ -80,11 +81,21 @@ func (r *XactBckMakeNCopies) Run() (err error) {
 
 func (r *XactBckMakeNCopies) Stop(error) { r.Abort() } // call base method
 
+func ValidateNCopies(copies int) error {
+	if copies <= 0 || copies > MaxNCopies {
+		return fmt.Errorf("Invalid num copies %d (valid range 1 - %d)", copies, MaxNCopies)
+	}
+	return nil
+}
+
 //
 // private methods
 //
 
 func (r *XactBckMakeNCopies) init() (numjs int, err error) {
+	if err = ValidateNCopies(r.Copies); err != nil {
+		return
+	}
 	availablePaths, _ := fs.Mountpaths.Get()
 	numjs = len(availablePaths)
 	if err = checkErrNumMp(r, numjs); err != nil {
@@ -151,15 +162,13 @@ func (j *jogger) walk(fqn string, osfi os.FileInfo, err error) error {
 		}
 		return nil
 	}
-	if !lom.HasCopies() {
+	cmn.Assert(j.parent.BckIsLocal == lom.BckIsLocal)
+	if n := lom.NumCopies(); n == j.parent.Copies {
 		return nil
-	}
-
-	j.parent.Namelocker.Lock(lom.Uname, true)
-	defer j.parent.Namelocker.Unlock(lom.Uname, true)
-
-	if errstr := lom.DelAllCopies(); errstr != "" {
-		return errors.New(errstr)
+	} else if n > j.parent.Copies {
+		err = j.delCopies(lom)
+	} else {
+		err = j.addCopies(lom)
 	}
 	j.num++
 	if (j.num % throttleNumObjects) == 0 {
@@ -173,6 +182,29 @@ func (j *jogger) walk(fqn string, osfi os.FileInfo, err error) error {
 	} else {
 		runtime.Gosched()
 	}
+	return err
+}
+
+func (j *jogger) delCopies(lom *cluster.LOM) (err error) {
+	j.parent.Namelocker.Lock(lom.Uname, true)
+	if j.parent.Copies == 1 {
+		if errstr := lom.DelAllCopies(); errstr != "" {
+			err = errors.New(errstr)
+		}
+	} else {
+		for i := len(lom.CopyFQN) - 1; i >= j.parent.Copies-1; i-- {
+			cpyfqn := lom.CopyFQN[i]
+			if errstr := lom.DelCopy(cpyfqn); errstr != "" {
+				err = errors.New(errstr)
+				break
+			}
+		}
+	}
+	j.parent.Namelocker.Unlock(lom.Uname, true)
+	return
+}
+
+func (j *jogger) addCopies(lom *cluster.LOM) error {
 	return nil
 }
 
