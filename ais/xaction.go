@@ -395,14 +395,17 @@ func (xs *xactions) renewBckMakeNCopies(bucket string, t *targetrunner, copies i
 	}
 	id := xs.uniqueid()
 	base := cmn.NewXactBase(id, kindmnc, bucket)
+	slab := gmem2.SelectSlab2(cmn.MiB) // FIXME: estimate
 	xmnc := &mirror.XactBckMakeNCopies{
 		XactBase:   *base,
 		T:          t,
 		Namelocker: t.rtnamemap,
+		Slab:       slab,
 		Copies:     copies,
 		BckIsLocal: bckIsLocal,
 	}
 	xs.add(xmnc)
+
 	go xmnc.Run()
 	xs.Unlock()
 }

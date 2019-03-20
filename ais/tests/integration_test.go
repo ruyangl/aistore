@@ -1629,7 +1629,7 @@ func testLocalMirror(t *testing.T, erase bool) {
 
 	if erase {
 		tutils.Logln("Erase in parallel...")
-		if err := api.MakeNCopies(baseParams, m.bucket, 0); err != nil {
+		if err := api.MakeNCopies(baseParams, m.bucket, 1); err != nil {
 			t.Fatalf("Failed to start erase-copies xaction, err: %v", err)
 		}
 		timedout := 60 // seconds

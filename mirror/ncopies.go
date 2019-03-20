@@ -17,6 +17,7 @@ import (
 	"github.com/NVIDIA/aistore/cluster"
 	"github.com/NVIDIA/aistore/cmn"
 	"github.com/NVIDIA/aistore/fs"
+	"github.com/NVIDIA/aistore/memsys"
 )
 
 const (
@@ -34,11 +35,12 @@ type (
 		// implements cmn.Xact a cmn.Runner interfaces
 		cmn.XactBase
 		// runtime
-		doneCh  chan struct{}
-		joggers map[string]*jogger
+		doneCh   chan struct{}
+		mpathers map[string]mpather
 		// init
 		T          cluster.Target
 		Namelocker cluster.NameLocker
+		Slab       *memsys.Slab2
 		Copies     int
 		BckIsLocal bool
 	}
@@ -48,6 +50,7 @@ type (
 		config    *cmn.Config
 		num       int64
 		stopCh    chan struct{}
+		buf       []byte
 	}
 )
 
@@ -71,7 +74,7 @@ func (r *XactBckMakeNCopies) Run() (err error) {
 			numjs--
 			if numjs == 0 {
 				glog.Infof("%s: all done", r)
-				r.joggers = nil
+				r.mpathers = nil
 				r.stop()
 				return
 			}
@@ -102,12 +105,12 @@ func (r *XactBckMakeNCopies) init() (numjs int, err error) {
 		return
 	}
 	r.doneCh = make(chan struct{}, numjs)
-	r.joggers = make(map[string]*jogger, numjs)
+	r.mpathers = make(map[string]mpather, numjs)
 	config := cmn.GCO.Get()
 	for _, mpathInfo := range availablePaths {
 		jogger := &jogger{parent: r, mpathInfo: mpathInfo, config: config}
 		mpathLC := mpathInfo.MakePath(fs.ObjectType, r.BckIsLocal)
-		r.joggers[mpathLC] = jogger
+		r.mpathers[mpathLC] = jogger
 		go jogger.jog()
 	}
 	return
@@ -118,20 +121,27 @@ func (r *XactBckMakeNCopies) stop() {
 		glog.Warningf("%s is (already) not running", r)
 		return
 	}
-	for _, jogger := range r.joggers {
-		jogger.stop()
+	for _, mpather := range r.mpathers {
+		mpather.stop()
 	}
 	r.EndTime(time.Now())
 }
 
 //
-// mpath jogger
+// mpath jogger - as mpather
 //
-func (j *jogger) stop() { j.stopCh <- struct{}{}; close(j.stopCh) }
 
+func (j *jogger) mountpathInfo() *fs.MountpathInfo { return j.mpathInfo }
+func (j *jogger) post(lom *cluster.LOM)            { cmn.Assert(false) }
+func (j *jogger) stop()                            { j.stopCh <- struct{}{}; close(j.stopCh) }
+
+//
+// mpath jogger - main
+//
 func (j *jogger) jog() {
 	glog.Infof("jogger[%s/%s] started", j.mpathInfo, j.parent.Bucket())
 	j.stopCh = make(chan struct{}, 1)
+	j.buf = j.parent.Slab.Alloc()
 	dir := j.mpathInfo.MakePathBucket(fs.ObjectType, j.parent.Bucket(), j.parent.BckIsLocal)
 	if err := filepath.Walk(dir, j.walk); err != nil {
 		s := err.Error()
@@ -142,6 +152,7 @@ func (j *jogger) jog() {
 		}
 	}
 	j.parent.doneCh <- struct{}{}
+	j.parent.Slab.Free(j.buf)
 }
 
 func (j *jogger) walk(fqn string, osfi os.FileInfo, err error) error {
@@ -160,6 +171,9 @@ func (j *jogger) walk(fqn string, osfi os.FileInfo, err error) error {
 		if glog.V(4) {
 			glog.Infof("Warning: %s", errstr)
 		}
+		return nil
+	}
+	if lom.IsCopy() {
 		return nil
 	}
 	cmn.Assert(j.parent.BckIsLocal == lom.BckIsLocal)
@@ -204,7 +218,22 @@ func (j *jogger) delCopies(lom *cluster.LOM) (err error) {
 	return
 }
 
-func (j *jogger) addCopies(lom *cluster.LOM) error {
+func (j *jogger) addCopies(lom *cluster.LOM) (err error) {
+	for i := 2; i <= j.parent.Copies; i++ {
+		if mpather := findLeastUtilized(lom, j.parent.mpathers); mpather != nil {
+			if err = copyTo(lom, mpather.mountpathInfo(), j.buf); err != nil {
+				glog.Errorln(err)
+				return
+			}
+			if glog.V(4) {
+				glog.Infof("%s: %s=>%s", lom, lom.ParsedFQN.MpathInfo, mpather.mountpathInfo())
+			}
+		} else {
+			err = fmt.Errorf("%s: cannot find dst mountpath", lom)
+			glog.Errorln(err)
+			return
+		}
+	}
 	return nil
 }
 
