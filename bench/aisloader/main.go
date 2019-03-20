@@ -954,7 +954,7 @@ func completeWorkOrder(wo *workOrder) {
 			statsd.Metric{
 				Type:  statsd.Timer,
 				Name:  "latency.targetresponse",
-				Value: float64(wo.latencies.TargetFirstResponse / time.Millisecond),
+				Value: cmn.MaxF64(float64(wo.latencies.TargetFirstResponse/time.Millisecond), 0),
 			},
 		}
 	}
@@ -1090,14 +1090,16 @@ func cleanUp() {
 		b := cmn.Min(t, runParams.batchSize)
 		n := t / b
 		for i := 0; i < n; i++ {
-			err := tutils.DeleteList(runParams.proxyURL, runParams.bucket, runParams.bckProvider, objs[i*b:(i+1)*b], true /* wait */, 0 /* wait forever */)
+			err := api.DeleteList(tutils.BaseAPIParams(runParams.proxyURL), runParams.bucket, runParams.bckProvider,
+				objs[i*b:(i+1)*b], true /* wait */, 0 /* wait forever */)
 			if err != nil {
 				fmt.Println("delete err ", err)
 			}
 		}
 
 		if t%b != 0 {
-			err := tutils.DeleteList(runParams.proxyURL, runParams.bucket, runParams.bckProvider, objs[n*b:], true /* wait */, 0 /* wait forever */)
+			err := api.DeleteList(tutils.BaseAPIParams(runParams.proxyURL), runParams.bucket, runParams.bckProvider,
+				objs[n*b:], true /* wait */, 0 /* wait forever */)
 			if err != nil {
 				fmt.Println("delete err ", err)
 			}

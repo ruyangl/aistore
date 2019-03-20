@@ -429,8 +429,8 @@ func (xs *xactions) abortBucketSpecific(bucket string) {
 			}
 			glog.Errorf("%s: timed-out waiting for termination", xx)
 		}(k, wg)
-		wg.Wait()
 	}
+	wg.Wait()
 }
 
 func (xs *xactions) renewDownloader(t *targetrunner) (xdl *downloader.Downloader, err error) {
